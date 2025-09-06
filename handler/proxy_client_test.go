@@ -145,7 +145,7 @@ func TestProxyClient_Do(t *testing.T) {
 			},
 		},
 		{
-			name: "should fail if unable to sign request",
+			name: "should fail if unable to Sign request",
 			request: &http.Request{
 				Method: "GET",
 				URL:    &url.URL{},
@@ -164,7 +164,7 @@ func TestProxyClient_Do(t *testing.T) {
 			},
 		},
 		{
-			name: "should fail if unable to sign request",
+			name: "should fail if unable to Sign request",
 			request: &http.Request{
 				Method: "GET",
 				URL:    &url.URL{},

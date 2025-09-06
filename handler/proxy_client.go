@@ -22,6 +22,7 @@ import (
 	"io/ioutil"
 	"net/http"
 	"net/http/httputil"
+	"net/url"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws/endpoints"
@@ -49,7 +50,7 @@ type ProxyClient struct {
 	SchemeOverride          string
 }
 
-func (p *ProxyClient) sign(req *http.Request, service *endpoints.ResolvedEndpoint) error {
+func (p *ProxyClient) Sign(req *http.Request, service *endpoints.ResolvedEndpoint) error {
 	body := bytes.NewReader([]byte{})
 
 	if req.Body != nil {
@@ -73,6 +74,7 @@ func (p *ProxyClient) sign(req *http.Request, service *endpoints.ResolvedEndpoin
 	}
 
 	var err error
+	log.WithFields(log.Fields{"service": service.SigningName, "method": service.SigningMethod, "region": service.SigningRegion}).Info("Signing request")
 	switch service.SigningMethod {
 	case "v4", "s3v4":
 		_, err = p.Signer.Sign(req, body, service.SigningName, service.SigningRegion, time.Now())
@@ -81,7 +83,7 @@ func (p *ProxyClient) sign(req *http.Request, service *endpoints.ResolvedEndpoin
 		_, err = p.Signer.Presign(req, body, service.SigningName, service.SigningRegion, time.Duration(time.Hour), time.Now())
 		break
 	default:
-		err = fmt.Errorf("unable to sign with specified signing method %s for service %s", service.SigningMethod, service.SigningName)
+		err = fmt.Errorf("unable to Sign with specified signing method %s for service %s", service.SigningMethod, service.SigningName)
 		break
 	}
 
@@ -184,7 +186,7 @@ func (p *ProxyClient) Do(req *http.Request) (*http.Response, error) {
 		return nil, fmt.Errorf("unable to determine service from host: %s", req.Host)
 	}
 
-	if err := p.sign(proxyReq, service); err != nil {
+	if err := p.Sign(proxyReq, service); err != nil {
 		return nil, err
 	}
 
@@ -256,4 +258,114 @@ func (p *ProxyClient) Do(req *http.Request) (*http.Response, error) {
 	}
 
 	return resp, nil
+}
+
+func (p *ProxyClient) DoWithoutSend(req *http.Request) error {
+	if p.HostOverride != "" {
+		req.URL.Host = p.HostOverride
+	}
+	if p.SchemeOverride != "" {
+		req.URL.Scheme = p.SchemeOverride
+	}
+	log.Printf("DoWithoutSend: after SchemeOverride and HostOverride, req.URL.Host: %v\n", req.URL.Host)
+
+	if log.GetLevel() == log.DebugLevel {
+		initialReqDump, err := httputil.DumpRequest(req, true)
+		if err != nil {
+			log.WithError(err).Error("unable to dump request")
+		}
+		log.WithField("request", string(initialReqDump)).Debug("Initial request dump:")
+	}
+
+	var reqChunked = chunked(req.TransferEncoding)
+	log.Println("DoWithoutSend: chunked completed")
+
+	var service *endpoints.ResolvedEndpoint
+	if p.SigningHostOverride != "" {
+		req.URL.Host = p.SigningHostOverride
+	}
+	if p.SigningNameOverride != "" && p.RegionOverride != "" {
+		log.Println("DoWithoutSend (inside SigningNameOverride/RegionOverride block)")
+		service = &endpoints.ResolvedEndpoint{URL: fmt.Sprintf("%s://%s", req.URL.Scheme, req.URL.Host), SigningMethod: "v4", SigningRegion: p.RegionOverride, SigningName: p.SigningNameOverride}
+	} else {
+		originBaseUrl, err := p.getHost(req.Header.Get("X-Origin-Base-URL"))
+		if err != nil {
+			log.WithError(err).Error("unable to get host from request")
+		}
+
+		log.Printf("DoWithoutSend: before determineAWSServiceFromHost, originBaseUrl: %v", originBaseUrl)
+		service = determineAWSServiceFromHost(originBaseUrl)
+	}
+	log.Printf("DoWithoutSend: calculated service: %v", service)
+
+	if service == nil {
+		return fmt.Errorf("unable to determine service from host: %s", req.Host)
+	}
+
+	log.Println("Signing request: ", req)
+	if err := p.Sign(req, service); err != nil {
+		log.Printf("DoWithoutSend: error signing request: %v", err)
+		return err
+	}
+
+	// go Documentation net/http, func (*Request) Write: If Body is present,
+	// Content-Length is <= 0 and TransferEncoding hasn't been set to
+	// "identity", Write adds "Transfer-Encoding: chunked" to the header.
+	// Body is closed after it is sent.
+	//
+	// Service like S3 does not support chunk encoding. We need to manipulate
+	// the Body value after signv4 signing because the signing process wraps the
+	// original body into another struct, which will result in
+	// Transfer-Encoding: chunked being set.
+	if !reqChunked {
+		// Set to identity to prevent write() from setting it to chunked.
+		req.TransferEncoding = []string{"identity"}
+	}
+	//} else {
+	//	proxyReq.TransferEncoding = req.TransferEncoding
+	//}
+
+	// Remove any headers specified
+	for _, header := range p.StripRequestHeaders {
+		log.WithField("StripHeader", string(header)).Debug("Stripping Header:")
+		req.Header.Del(header)
+	}
+
+	// Duplicate the header value for any headers specified into a new header
+	// with an "X-Original-" prefix.
+	for _, header := range p.DuplicateRequestHeaders {
+		headerValue := req.Header.Get(header)
+		if headerValue == "" {
+			log.WithField("DuplicateHeader", string(header)).Debug("Header empty, will not duplicate:")
+			continue
+		}
+
+		log.WithField("DuplicateHeader", string(header)).Debug("Duplicate Header to X-Original-* Prefix:")
+		newHeaderName := fmt.Sprintf("X-Original-%s", header)
+		req.Header.Set(newHeaderName, headerValue)
+	}
+
+	// Add custom headers (no overwrite)
+	//copyHeaderWithoutOverwrite(proxyReq.Header, p.CustomHeaders)
+	copyHeaderWithoutOverwrite(req.Header, p.CustomHeaders)
+
+	if log.GetLevel() == log.DebugLevel {
+		proxyReqDump, err := httputil.DumpRequest(req, true)
+		if err != nil {
+			log.WithError(err).Error("unable to dump request")
+		}
+		log.WithField("request", string(proxyReqDump)).Debug("modified request")
+	}
+
+	return nil
+
+}
+
+func (p *ProxyClient) getHost(fullURL string) (string, error) {
+	parsedURL, err := url.Parse(fullURL)
+	if err != nil {
+		fmt.Printf("Error parsing URL: %v\n", err)
+		return "", err
+	}
+	return parsedURL.Host, nil
 }
