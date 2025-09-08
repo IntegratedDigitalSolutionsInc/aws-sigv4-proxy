@@ -97,7 +97,7 @@ func main() {
 		sessionConfig.STSRegionalEndpoint = endpoints.RegionalSTSEndpoint
 	}
 
-	sessionConfig.CredentialsChainVerboseErrors = aws.Bool(shouldLogSigning())
+	sessionConfig.CredentialsChainVerboseErrors = aws.Bool(false)
 
 	session, err := session.NewSession(&sessionConfig)
 	if err != nil {

@@ -288,12 +288,17 @@ func (p *ProxyClient) DoWithoutSend(req *http.Request) error {
 		log.Println("DoWithoutSend (inside SigningNameOverride/RegionOverride block)")
 		service = &endpoints.ResolvedEndpoint{URL: fmt.Sprintf("%s://%s", req.URL.Scheme, req.URL.Host), SigningMethod: "v4", SigningRegion: p.RegionOverride, SigningName: p.SigningNameOverride}
 	} else {
-		originBaseUrl, err := p.getHost(req.Header.Get("X-Origin-Base-URL"))
+		//originBaseUrl, err := p.getHost(req.Header.Get("X-Origin-Base-URL"))
+		//if err != nil {
+		//	log.WithError(err).Error("unable to get host from request")
+		//}
+		//
+		//log.Printf("DoWithoutSend: before determineAWSServiceFromHost, originBaseUrl: %v", originBaseUrl)
+		//service = determineAWSServiceFromHost(originBaseUrl)
+		originBaseUrl, err := p.getHost(req.Host)
 		if err != nil {
 			log.WithError(err).Error("unable to get host from request")
 		}
-
-		log.Printf("DoWithoutSend: before determineAWSServiceFromHost, originBaseUrl: %v", originBaseUrl)
 		service = determineAWSServiceFromHost(originBaseUrl)
 	}
 	log.Printf("DoWithoutSend: calculated service: %v", service)
