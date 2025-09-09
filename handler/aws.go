@@ -57,7 +57,7 @@ func init() {
 	}
 }
 
-func determineAWSServiceFromHost(host string) *endpoints.ResolvedEndpoint {
+func DetermineAWSServiceFromHost(host string) *endpoints.ResolvedEndpoint {
 	for endpoint, service := range services {
 		if host == endpoint {
 			return &service
